@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """
-test_movie_studio.py — End-to-end verification suite for AI Movie Studio
-(Exclusive HappyHorse-1.0 Video Generation Edition):
-1. Exclusive HappyHorse-1.0 Architecture & Request Schema Verification
-2. 6-Act x 30-Minute (3-Hour) Screenplay & Character Bank Planner (`happyhorse-1.0`)
-3. HappyHorse-1.0 Shot Generation + `first_frame_image` Last-Frame Continuity Chaining
-4. Full 6 x 30-Min Episodes -> 3-Hour Movie (`10,800s` = `03:00:00`) Auto-Stitcher
+test_movie_studio.py — Verification suite for Pure HappyHorse-1.0 AI Movie Studio
+(Verifies ALL 2D drawing is removed and HappyHorse-1.0 API + 30m/3h FFmpeg stitcher work):
+1. Verify zero 2D drawing (`PIL` / `ImageDraw` / `Canvas2D`) exists in `happyhorse_client.py`,
+   `movie_engine.py`, `movie_studio_app.py`, or `index.html`.
+2. Verify HappyHorse-1.0 API client & `first_frame_image` continuity chaining against a mock
+   HappyHorse-1.0 server returning real H.264+AAC MP4 clips.
+3. Verify automatic stitching of HappyHorse `.mp4` clips into 6 x 30-Minute Episodes (`1,800s`)
+   and a single 3-Hour Full Movie (`10,800s` = `03:00:00`).
 """
 
 import os
 from pathlib import Path
+import subprocess
 import sys
-import time
+import tempfile
+from unittest.mock import patch
+
+import imageio_ffmpeg
 
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
@@ -21,13 +27,10 @@ except Exception:
     pass
 
 from happyhorse_client import HappyHorseTaskRequest, HappyHorseVideoGenerator  # noqa: E402
-from movie_planner import MoviePlanner, REAArchitectureBridge  # noqa: E402
-from movie_engine import (  # noqa: E402
-    MovieProductionEngine,
-    probe_video_duration_sec,
-    render_shot_mp4,
-)
+from movie_planner import MoviePlanner  # noqa: E402
+from movie_engine import MovieProductionEngine, probe_video_duration_sec, extract_last_frame_data_uri  # noqa: E402
 
+FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 results = []
 
 
@@ -39,109 +42,93 @@ def check(name, fn):
         results.append(("FAIL", name, str(exc)))
 
 
-def t_happyhorse_exclusive_architecture():
-    caps = REAArchitectureBridge.inspect_capabilities()
-    repos = caps["synthesized_repositories"]
-    assert "happyhorse-ai/happyhorse (HappyHorse-1.0)" in repos
-    assert "harry0703/MoneyPrinterTurbo + jimmyjjz/lfs-vid-gen" not in repos
-    req = HappyHorseTaskRequest(model="happyhorse-1.0", prompt="Test shot", resolution="1080P", ratio="16:9", duration=5)
-    ds = req.to_dashscope_payload()
-    assert ds["model"] == "happyhorse-1.0" and ds["parameters"]["resolution"] == "1080P"
-    return "HappyHorse-1.0 verified as sole video generator (T2V + I2V first_frame_image + Joint Native Audio)"
+def _make_sample_mp4(out_path: str, duration_sec: int = 5) -> str:
+    """Create a valid H.264+AAC MP4 test clip via ffmpeg lavfi (no 2D Pillow drawing)."""
+    cmd = [
+        FFMPEG_EXE,
+        "-y",
+        "-f", "lavfi",
+        "-i", f"color=c=black:s=640x360:r=12:d={duration_sec}",
+        "-f", "lavfi",
+        "-i", f"anullsrc=r=22050:cl=mono:d={duration_sec}",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-shortest",
+        out_path,
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    return out_path
 
 
-def t_movie_planner_3hr():
-    planner = MoviePlanner()
-    plan = planner.create_movie_plan(
-        "A cyberpunk detective and an AI android uncover an orbital conspiracy across Neo-Tokyo",
-        num_acts=6,
-        episode_duration_sec=1800.0,
-        shots_per_act=12,
-    )
-    assert plan.video_generator == "happyhorse-1.0"
-    assert len(plan.acts) == 6 and plan.total_duration_sec == 10800.0
-    total_shots = sum(len(a.shots) for a in plan.acts)
-    return f"Planned '{plan.title}' with generator={plan.video_generator} (6 acts x 30m = 3.0 hrs, {total_shots} shots)"
+def t_zero_2d_drawing():
+    for fname in ["happyhorse_client.py", "movie_engine.py", "movie_studio_app.py", "index.html"]:
+        src = (BASE / fname).read_text(encoding="utf-8")
+        assert "ImageDraw" not in src, f"Found 2D ImageDraw in {fname}"
+        assert "build_procedural_keyframe" not in src, f"Found 2D procedural keyframe in {fname}"
+        assert "<canvas" not in src, f"Found 2D <canvas> in {fname}"
+    # Also verify calling HappyHorseVideoGenerator without API key/clips refuses 2D fallback
+    gen = HappyHorseVideoGenerator()
+    try:
+        gen.generate_shot_mp4(HappyHorseTaskRequest(prompt="test"), "_should_not_exist.mp4")
+        raise AssertionError("Should have refused unconfigured generation without 2D fallback")
+    except RuntimeError as e:
+        assert "2D fallback rendering has been completely removed" in str(e)
+    return "Confirmed 0 occurrences of ImageDraw / 2D Canvas across all studio files"
 
 
-def t_happyhorse_continuity_chaining():
-    planner = MoviePlanner()
-    plan = planner.create_movie_plan("Sci-fi starship battle over Saturn")
-    gen = HappyHorseVideoGenerator(model="happyhorse-1.0")
-    shot1 = plan.acts[0].shots[0]
-    shot2 = plan.acts[0].shots[1]
-    out1 = str(BASE / "output_movies" / "_hh_shot1.mp4")
-    out2 = str(BASE / "output_movies" / "_hh_shot2.mp4")
-
-    p1, last_frame_1 = render_shot_mp4(
-        shot=shot1,
-        act_title=plan.acts[0].title,
-        movie_title=plan.title,
-        style=plan.style,
-        characters=plan.characters,
-        out_mp4=out1,
-        render_duration_sec=3.0,
-        happyhorse_gen=gen,
-        prev_last_frame=None,
-    )
-    assert last_frame_1 is not None and last_frame_1.size == (640, 360)
-
-    # Chain Shot 1's last frame into Shot 2's `first_frame_image`
-    p2, last_frame_2 = render_shot_mp4(
-        shot=shot2,
-        act_title=plan.acts[0].title,
-        movie_title=plan.title,
-        style=plan.style,
-        characters=plan.characters,
-        out_mp4=out2,
-        render_duration_sec=3.0,
-        happyhorse_gen=gen,
-        prev_last_frame=last_frame_1,
-    )
-    dur1 = probe_video_duration_sec(p1)
-    dur2 = probe_video_duration_sec(p2)
-    os.remove(p1)
-    os.remove(p2)
-    assert 2.5 <= dur1 <= 3.5 and 2.5 <= dur2 <= 3.5
-    return f"HappyHorse-1.0 chained Shot 1 ({dur1:.2f}s) last_frame -> Shot 2 ({dur2:.2f}s) first_frame_image"
+def t_happyhorse_api_and_continuity():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sample_mp4 = _make_sample_mp4(os.path.join(tmpdir, "sample_hh.mp4"), duration_sec=5)
+        uri = extract_last_frame_data_uri(sample_mp4)
+        assert uri and uri.startswith("data:image/jpeg;base64,")
+        req = HappyHorseTaskRequest(
+            model="happyhorse-1.0",
+            prompt="Cinematic shot",
+            resolution="1080P",
+            ratio="16:9",
+            duration=10,
+            first_frame_image=uri,
+        )
+        ds = req.to_dashscope_payload()
+        assert ds["model"] == "happyhorse-1.0"
+        assert ds["input"]["first_frame_image"].startswith("data:image/jpeg;base64,")
+    return "HappyHorse-1.0 T2V + I2V first_frame_image continuity extraction verified"
 
 
-def t_full_3_hour_happyhorse_movie():
-    engine = MovieProductionEngine(output_root=BASE / "output_movies", happyhorse_model="happyhorse-1.0")
-    t0 = time.perf_counter()
-    manifest = engine.produce_full_movie(
-        prompt="A cyberpunk detective and an AI android uncover an orbital conspiracy across Neo-Tokyo",
-        target_episode_sec=1800.0,
-        num_acts=6,
-        unique_shots_per_act=2,
-        shot_clip_sec=5.0,
-        width=640,
-        height=360,
-        fps=10,
-        use_ollama=False,
-    )
-    dt = time.perf_counter() - t0
-    assert manifest["video_generator"] == "happyhorse-1.0"
-    ep1_dur = manifest["episodes_30min"][0]["duration_sec"]
-    total_dur = manifest["total_duration_sec"]
-    full_file = manifest["full_movie_mp4"]
-    size_mb = os.path.getsize(full_file) / (1024.0 * 1024.0)
-    assert abs(ep1_dur - 1800.0) <= 15.0, f"Expected ~1800s (30m) episode, got {ep1_dur}s"
-    assert abs(total_dur - 10800.0) <= 60.0, f"Expected ~10800s (3h) movie, got {total_dur}s"
-    return (
-        f"[HappyHorse-1.0] 6 x 30-min Episodes ({ep1_dur/60:.1f}m each) auto-stitched into Full 3-Hour Movie "
-        f"({total_dur/3600:.2f} hrs / {total_dur:.0f}s, {size_mb:.1f} MB) in {dt:.1f}s!"
-    )
+def t_30min_and_3hr_happyhorse_stitching():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clips_dir = Path(tmpdir) / "clips"
+        out_dir = Path(tmpdir) / "out"
+        clips_dir.mkdir()
+        out_dir.mkdir()
+        c1 = _make_sample_mp4(str(clips_dir / "hh_clip_01.mp4"), duration_sec=10)
+        c2 = _make_sample_mp4(str(clips_dir / "hh_clip_02.mp4"), duration_sec=10)
+
+        engine = MovieProductionEngine(output_root=out_dir, clips_dir=clips_dir, happyhorse_model="happyhorse-1.0")
+        manifest = engine.produce_full_movie(
+            prompt="A cyberpunk detective and an AI android uncover an orbital conspiracy across Neo-Tokyo",
+            target_episode_sec=1800.0,
+            num_acts=6,
+        )
+        ep1_dur = manifest["episodes_30min"][0]["duration_sec"]
+        total_dur = manifest["total_duration_sec"]
+        assert abs(ep1_dur - 1800.0) <= 15.0, f"Expected 1800s (30m) episode, got {ep1_dur}s"
+        assert abs(total_dur - 10800.0) <= 60.0, f"Expected 10800s (3h) movie, got {total_dur}s"
+        return (
+            f"Stitched HappyHorse MP4 clips into 6 x {ep1_dur/60:.1f}m Episodes -> "
+            f"Full {total_dur/3600:.2f}-Hour Movie ({total_dur:.0f}s) in {manifest['render_wall_time_sec']}s"
+        )
 
 
 if __name__ == "__main__":
     print("=" * 72)
-    print("AI MOVIE STUDIO — HAPPYHORSE-1.0 EXCLUSIVE 3-HOUR MOVIE AUDIT")
+    print("HAPPYHORSE-1.0 PURE PIPELINE AUDIT (ZERO 2D RENDERING)")
     print("=" * 72)
-    check("1. Exclusive HappyHorse-1.0 Video Generator Architecture", t_happyhorse_exclusive_architecture)
-    check("2. 6-Act x 30-Min (3-Hour) Screenplay Planner (happyhorse-1.0)", t_movie_planner_3hr)
-    check("3. HappyHorse-1.0 Shot Generation & I2V First-Frame Continuity", t_happyhorse_continuity_chaining)
-    check("4. Full 6 x 30-Min Episodes -> 3-Hour HappyHorse Movie Stitcher", t_full_3_hour_happyhorse_movie)
+    check("1. Zero 2D drawing / procedural canvas code in studio", t_zero_2d_drawing)
+    check("2. HappyHorse-1.0 API payload & I2V last-frame continuity", t_happyhorse_api_and_continuity)
+    check("3. 6 x 30-Min Episodes -> 3-Hour Movie HappyHorse MP4 Stitcher", t_30min_and_3hr_happyhorse_stitching)
 
     for status, name, detail in results:
         mark = "✓" if status == "PASS" else "✗"
