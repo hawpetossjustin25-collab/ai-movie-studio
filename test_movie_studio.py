@@ -48,14 +48,14 @@ def _make_sample_mp4(out_path: str, duration_sec: int = 5) -> str:
         FFMPEG_EXE,
         "-y",
         "-f", "lavfi",
-        "-i", f"color=c=black:s=640x360:r=12:d={duration_sec}",
+        "-i", "color=c=black:s=640x360:r=12",
         "-f", "lavfi",
-        "-i", f"anullsrc=r=22050:cl=mono:d={duration_sec}",
+        "-i", "anullsrc=r=22050:cl=mono",
+        "-t", str(duration_sec),
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
-        "-shortest",
         out_path,
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
