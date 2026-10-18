@@ -28,6 +28,14 @@ from typing import Any, Dict, List, Optional, Tuple
 REA_PATH = Path(r"C:\Users\Admin\.devin\extensions\rea")
 
 TOP_GITHUB_MOVIE_ARCHITECTURES = {
+    "happyhorse-ai/happyhorse (HappyHorse-1.0)": {
+        "role": "Exclusive Video Generation Engine (T2V + I2V Continuity + Joint Native Audio)",
+        "features_integrated": [
+            "HappyHorse-1.0 unified 15B/4B-Distilled Text+Video+Audio generation",
+            "Image-to-Video (first_frame_image) last-frame continuity chaining across shots",
+            "Prompt-based camera control (slow dolly in, aerial crane shot, smooth pan)",
+        ],
+    },
     "HKUDS/ViMax": {
         "role": "Hierarchical Director + Screenwriter + Character Bank",
         "features_integrated": [
@@ -37,27 +45,9 @@ TOP_GITHUB_MOVIE_ARCHITECTURES = {
         ],
     },
     "F-R-L/forge-film": {
-        "role": "DAG Parallel Scene Scheduler & Zero-Reencode FFmpeg Stitcher",
+        "role": "Scene Graph Scheduler & Zero-Reencode FFmpeg Stitcher",
         "features_integrated": [
-            "Parallel multi-worker scene rendering across CPU cores",
-            "Cross-shot color palette & histogram continuity matching",
-            "Single-pass ffmpeg -f concat -safe 0 -c copy stream stitching",
-        ],
-    },
-    "AEON-7/aeon-movie-maker": {
-        "role": "Continuity & Sidechain-Ducked Cinema Audio Bus",
-        "features_integrated": [
-            "Deterministic per-character visual seed offsets",
-            "Last-frame visual continuity carry-forward between sequential shots",
-            "Sidechain-ducked audio mix (-12 dB music ducking under spoken dialogue)",
-        ],
-    },
-    "harry0703/MoneyPrinterTurbo + jimmyjjz/lfs-vid-gen": {
-        "role": "CPU-Fast 2.5D Motion Compositor, Multi-Voice TTS & Subtitles",
-        "features_integrated": [
-            "Keyless AI keyframes (Pollinations Flux) + 100% offline procedural cinema engine",
-            "Ken-Burns 2.5D pan/zoom/dolly camera motion + atmospheric weather particles",
-            "Burned-in widescreen cinema letterbox subtitles synchronized to speech",
+            "Single-pass ffmpeg -f concat -safe 0 -c copy stream stitching (30m -> 3h)",
         ],
     },
 }
@@ -219,7 +209,8 @@ class MovieProjectSpec:
     total_duration_sec: float = 10800.0    # 3 hours (6 x 30m acts)
     characters: List[CharacterSpec] = field(default_factory=list)
     acts: List[ActEpisodeSpec] = field(default_factory=list)
-    planner_source: str = "hybrid-vimax-forge"
+    video_generator: str = "happyhorse-1.0"
+    planner_source: str = "happyhorse-1.0+vimax"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
