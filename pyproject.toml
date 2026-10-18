@@ -24,4 +24,4 @@ dependencies = [
 ai-movie-studio = "movie_studio_app:main"
 
 [tool.setuptools]
-py-modules = ["movie_planner", "movie_engine", "movie_studio_app", "test_movie_studio"]
+py-modules = ["happyhorse_client", "movie_planner", "movie_engine", "movie_studio_app", "test_movie_studio"]
