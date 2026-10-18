@@ -50,35 +50,25 @@ def probe_video_duration_sec(video_path: str) -> float:
     return round(hrs * 3600.0 + mins * 60.0 + secs, 2)
 
 
-def extract_last_frame_data_uri(video_path: str) -> Optional[str]:
+def extract_last_frame_jpg(video_path: str, out_jpg: str) -> Optional[str]:
     """
-    Use `ffmpeg` to extract the final video frame of `video_path` as a JPEG
-    data URI for HappyHorse-1.0 `first_frame_image` I2V continuity chaining.
+    Use `ffmpeg` to extract the final video frame of `video_path` as a JPEG file
+    for MiniMax-H3 / HappyHorse I2V `first_frame_image` continuity chaining.
     """
     if not os.path.exists(video_path):
         return None
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-        jpg_path = tmp.name
-    try:
-        cmd = [
-            FFMPEG_EXE,
-            "-y",
-            "-sseof", "-0.15",
-            "-i", video_path,
-            "-frames:v", "1",
-            "-q:v", "3",
-            jpg_path,
-        ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
-        if os.path.exists(jpg_path) and os.path.getsize(jpg_path) > 0:
-            b64 = base64.b64encode(open(jpg_path, "rb").read()).decode("ascii")
-            return f"data:image/jpeg;base64,{b64}"
-    finally:
-        if os.path.exists(jpg_path):
-            try:
-                os.remove(jpg_path)
-            except OSError:
-                pass
+    cmd = [
+        FFMPEG_EXE,
+        "-y",
+        "-sseof", "-0.15",
+        "-i", video_path,
+        "-frames:v", "1",
+        "-q:v", "3",
+        out_jpg,
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
+    if os.path.exists(out_jpg) and os.path.getsize(out_jpg) > 0:
+        return out_jpg
     return None
 
 
@@ -151,9 +141,9 @@ class MovieProductionEngine:
         project: MovieProjectSpec,
         shot: ShotSpec,
         out_mp4: str,
-        duration_sec: int = 10,
-        resolution: str = "1080P",
-        first_frame_uri: Optional[str] = None,
+        duration_sec: int = 5,
+        resolution: str = "960x544 · 16:9 fast",
+        first_frame_path: Optional[str] = None,
     ) -> Tuple[str, Optional[str]]:
         hh_prompt = self.happyhorse.build_happyhorse_prompt(
             visual_prompt=shot.visual_prompt,
@@ -169,11 +159,12 @@ class MovieProductionEngine:
             ratio="16:9",
             duration=duration_sec,
             seed=shot.seed,
-            first_frame_image=first_frame_uri,
+            first_frame_image=first_frame_path,
         )
-        self.happyhorse.generate_shot_mp4(req, out_mp4)
-        next_uri = extract_last_frame_data_uri(out_mp4)
-        return out_mp4, next_uri
+        self.happyhorse.generate_shot_mp4(req, out_mp4, first_frame_path=first_frame_path)
+        last_jpg = out_mp4.replace(".mp4", "_last.jpg")
+        next_frame = extract_last_frame_jpg(out_mp4, last_jpg)
+        return out_mp4, next_frame
 
     def stitch_clips_to_30min_and_3hr(
         self,
@@ -252,35 +243,27 @@ class MovieProductionEngine:
             use_ollama=use_ollama,
         )
 
-        # If HappyHorse API/server is configured, generate every shot via HappyHorse-1.0
-        generated_clips: List[str] = []
-        if self.happyhorse.is_configured():
-            carry_uri: Optional[str] = None
+        # Prefer already-cached clips in happyhorse_clips/ if present, otherwise generate live via Free MiniMax-H3 ZeroGPU
+        generated_clips: List[str] = self.list_local_happyhorse_clips()
+        if not generated_clips or self.happyhorse.api_key or self.happyhorse.api_url:
+            generated_clips = []
+            carry_frame: Optional[str] = None
             for act in project.acts:
                 act_dir = self.output_root / f"act_{act.act_number:02d}"
                 act_dir.mkdir(parents=True, exist_ok=True)
                 for sh in act.shots[:unique_shots_per_act]:
                     if progress_cb:
-                        progress_cb(f"[HappyHorse-1.0 API] Generating Act {act.act_number} Shot {sh.shot_index}...")
+                        progress_cb(f"[Free MiniMax-H3 ZeroGPU] Generating Act {act.act_number} Shot {sh.shot_index} on cloud GPU...")
                     clip_p = str(act_dir / f"shot_{sh.shot_index:02d}.mp4")
-                    clip_p, carry_uri = self.render_shot(
+                    clip_p, carry_frame = self.render_shot(
                         project=project,
                         shot=sh,
                         out_mp4=clip_p,
                         duration_sec=int(shot_clip_sec),
                         resolution=resolution,
-                        first_frame_uri=carry_uri,
+                        first_frame_path=carry_frame,
                     )
                     generated_clips.append(clip_p)
-        else:
-            # Check for local HappyHorse clips in happyhorse_clips/
-            generated_clips = self.list_local_happyhorse_clips()
-            if not generated_clips:
-                raise RuntimeError(
-                    "No 2D fallback allowed: HappyHorse-1.0 requires either (a) a HappyHorse API key/URL "
-                    "(HAPPYHORSE_API_KEY / DASHSCOPE_API_KEY / FAL_KEY / HAPPYHORSE_API_URL) or "
-                    "(b) downloaded HappyHorse-1.0 .mp4 clips placed in 'happyhorse_clips/'."
-                )
 
         if progress_cb:
             progress_cb("[HappyHorse-1.0] Stitching 30-Minute Episodes & 3-Hour Full Movie...")
