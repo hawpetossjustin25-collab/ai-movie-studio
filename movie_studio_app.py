@@ -1,30 +1,37 @@
 #!/usr/bin/env python3
 """
-movie_studio_app.py — AI Movie Studio Desktop Application (PyQt6) & CLI.
+movie_studio_app.py — HappyHorse-1.0 AI Movie Studio (Zero 2D drawing).
 
-Prompt -> 6-Act Screenplay (30-Min Episodes) -> Parallel CPU Shot Synthesis ->
-Sidechain-Ducked Audio Mix -> Zero-Reencode FFmpeg Auto-Stitch into a Full
-3-Hour Feature Movie (`full_3hr_movie.mp4`).
+1. Plans a 6-Act x 30-Minute (3-Hour) Screenplay with HappyHorse-1.0 native
+   camera & joint-audio prompts (`happyhorse-1.0`).
+2. Generates video clips via HappyHorse-1.0 API (`DASHSCOPE_API_KEY` / `FAL_KEY`
+   / `HAPPYHORSE_API_URL`) OR ingests real HappyHorse-1.0 `.mp4` clips placed
+   in `happyhorse_clips/`.
+3. Automatically stitches clips into 6 x 30-Minute Episode MP4s (`1,800s`) and
+   strings all 6 Episodes into a Full 3-Hour Movie (`10,800s` = `03:00:00`).
 """
 
 import json
 import os
 from pathlib import Path
-import subprocess
+import shutil
 import sys
 import threading
+import webbrowser
 
-from movie_planner import MoviePlanner, REAArchitectureBridge, VISUAL_STYLES
-from movie_engine import MovieProductionEngine, OUTPUT_DIR, build_procedural_keyframe
+from happyhorse_client import HappyHorseVideoGenerator
+from movie_planner import MoviePlanner, REAArchitectureBridge
+from movie_engine import MovieProductionEngine, OUTPUT_DIR, CLIPS_DIR
 
 BASE_DIR = Path(__file__).resolve().parent
 
 
 def run_gui():
-    from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-    from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPainter
+    from PyQt6.QtCore import pyqtSignal, QObject
     from PyQt6.QtWidgets import (
         QApplication,
+        QCheckBox,
+        QFileDialog,
         QHBoxLayout,
         QLabel,
         QLineEdit,
@@ -33,75 +40,12 @@ def run_gui():
         QTextEdit,
         QVBoxLayout,
         QWidget,
-        QCheckBox,
     )
 
     class Signals(QObject):
         progress = pyqtSignal(str)
         finished = pyqtSignal(dict)
-
-    class CinemaPreviewWidget(QLabel):
-        """Live animated widescreen cinema preview of the current MovieProjectSpec."""
-
-        def __init__(self):
-            super().__init__()
-            self.setMinimumSize(720, 405)
-            self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.setStyleSheet("background:#05070e; border:2px solid #38bdf8; border-radius:10px;")
-            self.project = None
-            self.frame_idx = 0
-            self.cached_base = None
-            self.cached_shot_key = None
-
-        def set_project(self, proj):
-            self.project = proj
-            self.frame_idx = 0
-            self.cached_shot_key = None
-
-        def tick_preview(self):
-            if not self.project or not self.project.acts:
-                return
-            self.frame_idx += 1
-            act_idx = (self.frame_idx // 90) % len(self.project.acts)
-            act = self.project.acts[act_idx]
-            shot_idx = (self.frame_idx // 30) % len(act.shots)
-            shot = act.shots[shot_idx]
-            key = (act.act_number, shot.shot_index, self.project.title)
-            if key != self.cached_shot_key or self.cached_base is None:
-                self.cached_base = build_procedural_keyframe(
-                    shot, self.project.style, self.project.characters, 640, 360
-                )
-                self.cached_shot_key = key
-
-            bw, bh = self.cached_base.size
-            prog = (self.frame_idx % 30) / 30.0
-            ox = int((bw - 640) * prog)
-            oy = (bh - 360) // 2
-            crop = self.cached_base.crop((ox, oy, ox + 640, oy + 360)).copy()
-
-            from PIL import ImageDraw, ImageFont
-            draw = ImageDraw.Draw(crop)
-            pal = VISUAL_STYLES.get(self.project.style, VISUAL_STYLES["cyberpunk_noir"])
-            bar_h = 46
-            draw.rectangle((0, 0, 640, bar_h), fill=(6, 8, 14))
-            draw.rectangle((0, 360 - bar_h, 640, 360), fill=(6, 8, 14))
-            font = ImageFont.load_default()
-            draw.text(
-                (12, 10),
-                f"[HappyHorse-1.0] {self.project.title[:28]}  |  {act.title[:28]} (30m)  |  Shot {shot.shot_index}",
-                fill=pal["accent"],
-                font=font,
-            )
-            draw.text(
-                (14, 360 - bar_h + 14),
-                f"{shot.speaker.upper()}: \"{shot.dialogue[:68]}\"",
-                fill=(255, 255, 255),
-                font=font,
-            )
-
-            raw = crop.tobytes("raw", "RGB")
-            qimg = QImage(raw, 640, 360, 640 * 3, QImage.Format.Format_RGB888)
-            self.setPixmap(QPixmap.fromImage(qimg).scaled(self.width(), self.height(), Qt.AspectRatioMode.KeepAspectRatio))
+        failed = pyqtSignal(str)
 
     class MainWindow(QMainWindow):
         def __init__(self):
@@ -111,124 +55,130 @@ def run_gui():
             self.signals = Signals()
             self.signals.progress.connect(self._on_progress)
             self.signals.finished.connect(self._on_finished)
+            self.signals.failed.connect(self._on_failed)
             self.last_manifest = None
 
             self.project = self.planner.create_movie_plan(
                 "A cyberpunk detective and an AI android uncover an orbital conspiracy across Neo-Tokyo"
             )
 
-            self.setWindowTitle("AI Movie Studio — HappyHorse-1.0 Exclusive Video Generator (30-Min Episodes -> 3-Hour Movies)")
-            self.resize(1200, 720)
+            self.setWindowTitle("AI Movie Studio — Pure HappyHorse-1.0 Video Generator & 30m->3h Stitcher (Zero 2D)")
+            self.resize(1120, 700)
             self.setStyleSheet("background-color:#090d16; color:#e2e8f0; font-family:Segoe UI;")
 
             central = QWidget()
             self.setCentralWidget(central)
-            root = QHBoxLayout(central)
+            root = QVBoxLayout(central)
 
-            # Left column: Live Cinema Screen + Prompt Bar + Presets
-            left = QVBoxLayout()
-            self.preview = CinemaPreviewWidget()
-            self.preview.set_project(self.project)
-            left.addWidget(self.preview, stretch=1)
+            # Top status banner
+            self.status_lbl = QLabel(
+                "Video Generator: HappyHorse-1.0 ONLY (2D rendering completely removed)  |  "
+                f"Local HappyHorse MP4 clips in happyhorse_clips/: {len(self.engine.list_local_happyhorse_clips())}"
+            )
+            self.status_lbl.setStyleSheet("background:#131f37; border:1px solid #38bdf8; border-radius:8px; padding:10px; font-weight:bold; color:#34d399;")
+            root.addWidget(self.status_lbl)
 
+            # HappyHorse API Key / URL configuration row
+            cfg_row = QHBoxLayout()
+            self.api_key_in = QLineEdit(self.engine.happyhorse.api_key)
+            self.api_key_in.setPlaceholderText("Optional: HappyHorse API Key (DASHSCOPE_API_KEY / FAL_KEY / HAPPYHORSE_API_KEY)...")
+            self.api_key_in.setEchoMode(QLineEdit.EchoMode.Password)
+            self.api_key_in.setStyleSheet("background:#131f37; border:1px solid #334155; border-radius:6px; padding:8px; color:#fff;")
+            cfg_row.addWidget(self.api_key_in, stretch=2)
+
+            self.api_url_in = QLineEdit(self.engine.happyhorse.api_url)
+            self.api_url_in.setPlaceholderText("Optional: Custom/Self-Hosted HappyHorse Endpoint URL...")
+            self.api_url_in.setStyleSheet("background:#131f37; border:1px solid #334155; border-radius:6px; padding:8px; color:#fff;")
+            cfg_row.addWidget(self.api_url_in, stretch=2)
+
+            btn_web = QPushButton("🌐 Open HappyHorse Online (happyhorses.io)")
+            btn_web.setStyleSheet("background:#7c3aed; color:#fff; font-weight:bold; padding:8px 12px; border-radius:6px;")
+            btn_web.clicked.connect(lambda: webbrowser.open("https://happyhorses.io"))
+            cfg_row.addWidget(btn_web)
+
+            btn_import = QPushButton("📥 Import HappyHorse .mp4 Clips")
+            btn_import.setStyleSheet("background:#0d9488; color:#fff; font-weight:bold; padding:8px 12px; border-radius:6px;")
+            btn_import.clicked.connect(self.on_import_clips)
+            cfg_row.addWidget(btn_import)
+            root.addLayout(cfg_row)
+
+            # Movie Prompt Row
             pbar = QHBoxLayout()
-            self.prompt_in = QLineEdit()
-            self.prompt_in.setText("A cyberpunk detective and an AI android uncover an orbital conspiracy across Neo-Tokyo")
-            self.prompt_in.setPlaceholderText("Type your movie prompt — auto-builds 6 x 30-min Episodes and stitches a Full 3-Hour Movie...")
+            self.prompt_in = QLineEdit("A cyberpunk detective and an AI android uncover an orbital conspiracy across Neo-Tokyo")
             self.prompt_in.setStyleSheet("background:#131f37; border:1px solid #38bdf8; border-radius:6px; padding:10px; font-size:14px; color:#fff;")
             pbar.addWidget(self.prompt_in, stretch=1)
 
-            btn_plan = QPushButton("📝 Plan 6-Act Screenplay")
+            self.chk_ollama = QCheckBox("Use Ollama (llama3.2:3b)")
+            pbar.addWidget(self.chk_ollama)
+
+            btn_plan = QPushButton("📝 Build 6-Act HappyHorse Prompts")
             btn_plan.setStyleSheet("background:#0284c7; color:#fff; font-weight:bold; padding:10px 12px; border-radius:6px;")
-            btn_plan.clicked.connect(self.on_plan_only)
+            btn_plan.clicked.connect(self.on_plan)
             pbar.addWidget(btn_plan)
 
-            self.btn_render = QPushButton("🎬 Render 6x 30-Min Episodes + Stitch 3-Hour Movie (.mp4)")
-            self.btn_render.setStyleSheet("background:#059669; color:#fff; font-weight:bold; padding:10px 14px; border-radius:6px;")
-            self.btn_render.clicked.connect(self.on_render_full_movie)
-            pbar.addWidget(self.btn_render)
-            left.addLayout(pbar)
+            self.btn_produce = QPushButton("🎬 Generate / Stitch 6x 30-Min Episodes -> 3-Hour Movie (.mp4)")
+            self.btn_produce.setStyleSheet("background:#059669; color:#fff; font-weight:bold; padding:10px 14px; border-radius:6px;")
+            self.btn_produce.clicked.connect(self.on_produce)
+            pbar.addWidget(self.btn_produce)
+            root.addLayout(pbar)
 
-            # Presets row
-            prow = QHBoxLayout()
-            presets = [
-                ("🕵️ Cyberpunk Noir 3-Hr Saga", "A cyberpunk detective and an AI android uncover an orbital conspiracy across Neo-Tokyo"),
-                ("🚀 Epic Sci-Fi Odyssey", "The last starship crew crosses a collapsing wormhole to save Earth from an ancient cosmic fleet"),
-                ("🐉 Dark Fantasy Kingdom", "An exiled knight and a rogue sorceress unite six shattered realms against the Necromancer Dragon"),
-                ("⚡ Action Thriller", "A former special-ops agent races across six global cities to disarm a rogue satellite network"),
-            ]
-            for label, txt in presets:
-                b = QPushButton(label)
-                b.setStyleSheet("background:#1e293b; color:#38bdf8; padding:6px 10px; border-radius:5px; font-size:12px;")
-                b.clicked.connect(lambda _c=False, t=txt: self._use_preset(t))
-                prow.addWidget(b)
-            left.addLayout(prow)
-            root.addLayout(left, stretch=3)
-
-            # Right column: REA Architecture Status + 6-Act Inspector + Open Folder
-            right = QVBoxLayout()
-            rea_info = REAArchitectureBridge.inspect_capabilities()
-            self.status_lbl = QLabel(
-                f"Video Generator: HappyHorse AI ONLY (happyhorse-1.0)\n"
-                f"Continuity: I2V first_frame_image + Joint Native Audio\n"
-                f"Target: 6 x 30-Min Acts -> Auto-Stitched 3-Hour MP4"
-            )
-            self.status_lbl.setStyleSheet("background:#131f37; border:1px solid #334155; border-radius:8px; padding:10px; font-weight:bold; color:#34d399;")
-            right.addWidget(self.status_lbl)
-
-            self.chk_ollama = QCheckBox("Use Local Ollama (llama3.2:3b) for Screenplay Naming")
-            self.chk_ollama.setChecked(False)
-            right.addWidget(self.chk_ollama)
-
+            # Main Inspector & Shot Prompt View (No 2D canvas)
             self.info_box = QTextEdit()
             self.info_box.setReadOnly(True)
-            self.info_box.setStyleSheet("background:#070b14; border:1px solid #1e293b; border-radius:8px; font-family:Consolas; font-size:11px; color:#7dd3fc;")
-            right.addWidget(self.info_box, stretch=1)
+            self.info_box.setStyleSheet("background:#070b14; border:1px solid #1e293b; border-radius:8px; font-family:Consolas; font-size:12px; color:#7dd3fc;")
+            root.addWidget(self.info_box, stretch=1)
 
-            btn_open = QPushButton("📂 Open Output Movies Folder / Play 3-Hour MP4")
-            btn_open.setStyleSheet("background:#d97706; color:#fff; font-weight:bold; padding:10px; border-radius:6px;")
-            btn_open.clicked.connect(self.on_open_output)
-            right.addWidget(btn_open)
+            bot_row = QHBoxLayout()
+            btn_clips_dir = QPushButton("📁 Open happyhorse_clips/ Folder")
+            btn_clips_dir.setStyleSheet("background:#1e293b; color:#38bdf8; font-weight:bold; padding:10px; border-radius:6px;")
+            btn_clips_dir.clicked.connect(lambda: os.startfile(str(CLIPS_DIR)))
+            bot_row.addWidget(btn_clips_dir)
 
-            root.addLayout(right, stretch=1)
-            self._refresh_info()
+            btn_out_dir = QPushButton("📂 Open output_movies/ Folder & Play 3-Hour MP4")
+            btn_out_dir.setStyleSheet("background:#d97706; color:#fff; font-weight:bold; padding:10px; border-radius:6px;")
+            btn_out_dir.clicked.connect(self.on_open_output)
+            bot_row.addWidget(btn_out_dir)
+            root.addLayout(bot_row)
 
-            self.timer = QTimer(self)
-            self.timer.timeout.connect(self.preview.tick_preview)
-            self.timer.start(80)
+            self._refresh_view()
 
-        def _use_preset(self, txt: str):
-            self.prompt_in.setText(txt)
-            self.on_plan_only()
+        def on_import_clips(self):
+            files, _ = QFileDialog.getOpenFileNames(self, "Select HappyHorse .mp4 Clips", "", "MP4 Video (*.mp4)")
+            for f in files:
+                shutil.copy2(f, CLIPS_DIR / os.path.basename(f))
+            self._refresh_view()
 
-        def on_plan_only(self):
+        def on_plan(self):
             txt = self.prompt_in.text().strip()
             if not txt:
                 return
             self.project = self.planner.create_movie_plan(
                 txt, num_acts=6, episode_duration_sec=1800.0, shots_per_act=12, use_ollama=self.chk_ollama.isChecked()
             )
-            self.preview.set_project(self.project)
-            self._refresh_info()
+            self._refresh_view()
 
-        def on_render_full_movie(self):
+        def on_produce(self):
             txt = self.prompt_in.text().strip()
             if not txt:
                 return
-            self.btn_render.setEnabled(False)
-            use_ol = self.chk_ollama.isChecked()
+            self.engine.happyhorse.api_key = self.api_key_in.text().strip() or self.engine.happyhorse.api_key
+            self.engine.happyhorse.api_url = self.api_url_in.text().strip() or self.engine.happyhorse.api_url
+            self.btn_produce.setEnabled(False)
 
             def _worker():
-                manifest = self.engine.produce_full_movie(
-                    prompt=txt,
-                    target_episode_sec=1800.0,
-                    num_acts=6,
-                    unique_shots_per_act=3,
-                    shot_clip_sec=4.0,
-                    use_ollama=use_ol,
-                    progress_cb=lambda msg: self.signals.progress.emit(msg),
-                )
-                self.signals.finished.emit(manifest)
+                try:
+                    manifest = self.engine.produce_full_movie(
+                        prompt=txt,
+                        target_episode_sec=1800.0,
+                        num_acts=6,
+                        unique_shots_per_act=3,
+                        shot_clip_sec=10,
+                        use_ollama=self.chk_ollama.isChecked(),
+                        progress_cb=lambda m: self.signals.progress.emit(m),
+                    )
+                    self.signals.finished.emit(manifest)
+                except Exception as exc:
+                    self.signals.failed.emit(str(exc))
 
             threading.Thread(target=_worker, daemon=True).start()
 
@@ -237,13 +187,15 @@ def run_gui():
 
         def _on_finished(self, manifest: dict):
             self.last_manifest = manifest
-            self.btn_render.setEnabled(True)
+            self.btn_produce.setEnabled(True)
             self.status_lbl.setText(
-                f"✓ MOVIE COMPLETE ({manifest['total_duration_hours']} hrs / {manifest['total_duration_minutes']} min)\n"
-                f"File: {os.path.basename(manifest['full_movie_mp4'])}\n"
-                f"Rendered & Stitched in {manifest['render_wall_time_sec']}s on CPU"
+                f"✓ HAPPYHORSE-1.0 3-HOUR MOVIE READY ({manifest['total_duration_hours']} hrs / {manifest['total_duration_minutes']} min) -> {os.path.basename(manifest['full_movie_mp4'])}"
             )
             self.info_box.setPlainText(json.dumps(manifest, indent=2))
+
+        def _on_failed(self, err: str):
+            self.btn_produce.setEnabled(True)
+            self.status_lbl.setText(f"HappyHorse-1.0 Notice: {err}")
 
         def on_open_output(self):
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -252,20 +204,31 @@ def run_gui():
             else:
                 os.startfile(str(OUTPUT_DIR))
 
-        def _refresh_info(self):
-            summary = {
+        def _refresh_view(self):
+            clips = self.engine.list_local_happyhorse_clips()
+            self.status_lbl.setText(
+                "Video Generator: HappyHorse-1.0 ONLY (Zero 2D rendering)  |  "
+                f"Imported HappyHorse .mp4 clips in happyhorse_clips/: {len(clips)}"
+            )
+            hh_prompts = []
+            for a in self.project.acts:
+                s0 = a.shots[0]
+                hh_prompts.append({
+                    "act": f"Act {a.act_number} (30-Min Episode) — {a.title}",
+                    "happyhorse_1_0_prompt": HappyHorseVideoGenerator.build_happyhorse_prompt(
+                        s0.visual_prompt, s0.camera_motion, s0.speaker, s0.dialogue, self.project.style
+                    ),
+                    "shots_in_act": len(a.shots),
+                })
+            view = {
+                "video_generator": "happyhorse-1.0 (EXCLUSIVE — 2D rendering removed)",
                 "title": self.project.title,
-                "style": self.project.style,
-                "episode_duration_min": self.project.episode_duration_sec / 60.0,
-                "total_movie_hours": self.project.total_duration_sec / 3600.0,
-                "characters": [c.name + f" ({c.role})" for c in self.project.characters],
-                "acts_30min_each": [
-                    {"act": a.act_number, "title": a.title, "shots": len(a.shots), "duration_min": a.target_duration_sec / 60.0}
-                    for a in self.project.acts
-                ],
-                "rea_synthesized_engines": list(REAArchitectureBridge.inspect_capabilities()["synthesized_repositories"].keys()),
+                "episode_duration": "30.0 minutes (1,800s) per Act",
+                "full_movie_duration": "3.0 hours (10,800s) across 6 Acts",
+                "local_happyhorse_clips_ready": [os.path.basename(c) for c in clips],
+                "acts_and_happyhorse_prompts": hh_prompts,
             }
-            self.info_box.setPlainText(json.dumps(summary, indent=2))
+            self.info_box.setPlainText(json.dumps(view, indent=2))
 
     app = QApplication(sys.argv)
     win = MainWindow()
