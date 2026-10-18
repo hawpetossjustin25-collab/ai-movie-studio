@@ -88,7 +88,7 @@ def run_gui():
             font = ImageFont.load_default()
             draw.text(
                 (12, 10),
-                f"{self.project.title[:32]}  |  {act.title[:32]} (30m Episode)  |  Shot {shot.shot_index}",
+                f"[HappyHorse-1.0] {self.project.title[:28]}  |  {act.title[:28]} (30m)  |  Shot {shot.shot_index}",
                 fill=pal["accent"],
                 font=font,
             )
@@ -117,7 +117,7 @@ def run_gui():
                 "A cyberpunk detective and an AI android uncover an orbital conspiracy across Neo-Tokyo"
             )
 
-            self.setWindowTitle("AI Movie Studio — 30-Min Episode & 3-Hour Full Movie Generator (100% Free Forever, CPU-First)")
+            self.setWindowTitle("AI Movie Studio — HappyHorse-1.0 Exclusive Video Generator (30-Min Episodes -> 3-Hour Movies)")
             self.resize(1200, 720)
             self.setStyleSheet("background-color:#090d16; color:#e2e8f0; font-family:Segoe UI;")
 
@@ -169,8 +169,8 @@ def run_gui():
             right = QVBoxLayout()
             rea_info = REAArchitectureBridge.inspect_capabilities()
             self.status_lbl = QLabel(
-                f"REA Engine Bridge: {rea_info['rea_status'].upper()}\n"
-                f"Architecture: ViMax + Forge-Film + AEON + MoneyPrinter\n"
+                f"Video Generator: HappyHorse AI ONLY (happyhorse-1.0)\n"
+                f"Continuity: I2V first_frame_image + Joint Native Audio\n"
                 f"Target: 6 x 30-Min Acts -> Auto-Stitched 3-Hour MP4"
             )
             self.status_lbl.setStyleSheet("background:#131f37; border:1px solid #334155; border-radius:8px; padding:10px; font-weight:bold; color:#34d399;")
